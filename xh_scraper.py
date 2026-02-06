@@ -19,7 +19,7 @@ def to_signed_32(n: int) -> int:
 class _ByteGenerator:
     """
     PRNG idéntico al del JavaScript de xHamster.
-    Cada algoritmo se identifica por el primer byte de la “parte hex”
+    Cada algoritmo se identifica por el primer byte de la "parte hex"
     de la URL.  Si xHamster añade otro método sólo hay que crear _algo8().
     """
 
@@ -143,19 +143,41 @@ class XHamsterScraper:
         return html
 
     # --------------- descifrado de URLs ofuscadas ------------------ #
+    def _decipher_hex_string(self, hex_str: str) -> Optional[str]:
+        """Descifra un string hexadecimal y retorna el contenido plano."""
+        if len(hex_str) < 12:
+            return None
+        try:
+            data = bytes.fromhex(hex_str)
+            algo_id, seed = data[0], int.from_bytes(data[1:5], "little", signed=True)
+            gen = _ByteGenerator(algo_id, seed)
+            plain = bytearray(b ^ next(gen) for b in data[5:]).decode("latin-1", errors="ignore")
+            return plain
+        except (ValueError, Exception):
+            return None
+
     def _decipher_format_url(self, url: str) -> Optional[str]:
+        """
+        Descifra una URL ofuscada. Puede recibir:
+        - Un string hexadecimal directo (nuevo formato)
+        - Una URL completa con parte hexadecimal en el path
+        """
+        if re.fullmatch(r'[0-9a-fA-F]{12,}', url):
+            return self._decipher_hex_string(url)
+        
+        if not url.startswith(('http://', 'https://')):
+            return None
+
         pr = urllib.parse.urlparse(url)
         m = self._HEX_RE.match(pr.path)
         if not m:
             return url
+        
         hex_str, rest = m.group("hex"), m.group("rest")
-        data = bytes.fromhex(hex_str)
-        algo_id, seed = data[0], int.from_bytes(data[1:5], "little", signed=True)
-        try:
-            gen = _ByteGenerator(algo_id, seed)
-        except ValueError:
+        plain = self._decipher_hex_string(hex_str)
+        if not plain:
             return None
-        plain = bytearray(b ^ next(gen) for b in data[5:]).decode("latin-1", errors="ignore")
+        
         return pr._replace(path=f"/{plain}{rest}").geturl()
 
     # -------- leer master m3u8 y enumerar variantes disponibles ----- #
@@ -307,7 +329,6 @@ class XHamsterScraper:
         return "".join(f"{k}: {v}\r\n" for k, v in hdr.items())
 
     def download_video_with_ffmpeg(self, media_url: str, output_path: str, referer_url: Optional[str] = None) -> bool:
-        # cdn requiere al menos referer
         header_str = self._ffmpeg_header_string({"Referer": referer_url} if referer_url else None)
         cmd = [
             "ffmpeg",
